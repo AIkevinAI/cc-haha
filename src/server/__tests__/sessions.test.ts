@@ -1226,6 +1226,20 @@ describe('SessionService', () => {
     expect(context.branches.some((branch) => branch.name.startsWith('worktree-desktop-'))).toBe(false)
   })
 
+  it('should keep stale worktree records when their paths cannot be resolved', async () => {
+    const workDir = await createCleanGitRepo(tmpDir)
+    const staleWorktree = path.join(tmpDir, `stale-worktree-${Date.now()}`)
+    git(workDir, 'worktree', 'add', '-b', 'stale-worktree', staleWorktree, 'feature/rail')
+    await fs.rm(staleWorktree, { recursive: true, force: true })
+
+    const context = await getRepositoryContext(workDir)
+    const expectedPath = path.resolve(staleWorktree).normalize('NFC')
+    expect(context.state).toBe('ok')
+    expect(context.worktrees.some((worktree) => (
+      worktree.path === expectedPath && worktree.branch === 'stale-worktree' && !worktree.current
+    ))).toBe(true)
+  })
+
   it('should let git carry compatible dirty changes during direct branch launch', async () => {
     const workDir = await createCleanGitRepo(tmpDir)
     await fs.writeFile(path.join(workDir, 'README.md'), 'main\nlocal-pricing-edit\n')
@@ -1515,6 +1529,26 @@ describe('SessionService', () => {
     expect(launchInfo!.transcriptMessageCount).toBe(2)
     expect(launchInfo!.customTitle).toBe('Saved chat')
   })
+
+  it('should recover Windows drive paths from sanitized project dirs for old transcripts without metadata', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff'
+    const userUuid = crypto.randomUUID()
+    const userEntry = makeUserEntry('Resume this Windows session', userUuid)
+    delete userEntry.cwd
+    await writeSessionFile('g--AI-NTos-NT-deepseek-nano-core', sessionId, [
+      makeSnapshotEntry(),
+      userEntry,
+      makeAssistantEntry('Welcome back', userUuid),
+    ])
+
+    const expectedWorkDir = 'g:\\AI\\NTos\\NT\\deepseek\\nano\\core'
+    expect(await service.getSessionWorkDir(sessionId)).toBe(expectedWorkDir)
+
+    const launchInfo = await service.getSessionLaunchInfo(sessionId)
+    expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.workDir).toBe(expectedWorkDir)
+    expect(launchInfo!.transcriptMessageCount).toBe(2)
+  })
 })
 
 // ============================================================================
@@ -1533,11 +1567,8 @@ describe('Sessions API', () => {
     const { handleSessionsApi } = await import('../api/sessions.js')
     const { handleConversationsApi } = await import('../api/conversations.js')
 
-    const port = 30000 + Math.floor(Math.random() * 10000)
-    baseUrl = `http://127.0.0.1:${port}`
-
     server = Bun.serve({
-      port,
+      port: 0,
       hostname: '127.0.0.1',
 
       async fetch(req) {
@@ -1555,6 +1586,7 @@ describe('Sessions API', () => {
         return new Response('Not Found', { status: 404 })
       },
     })
+    baseUrl = `http://127.0.0.1:${server.port}`
   })
 
   afterEach(async () => {
