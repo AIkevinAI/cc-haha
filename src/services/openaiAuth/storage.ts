@@ -13,7 +13,8 @@ type SecureStorageShape = Record<string, unknown> & {
   openaiCodexOauth?: OpenAIOAuthTokens
 }
 
-const SECURE_STORAGE_CACHE_KEY = '__secure-storage__'
+const SECURE_STORAGE_CACHE_KEY = 'secure-storage'
+const FILE_CACHE_KEY_PREFIX = 'file:'
 
 function getDesktopTokenFilePath(): string | null {
   const filePath = process.env[OPENAI_CODEX_OAUTH_FILE_ENV_KEY]?.trim()
@@ -129,8 +130,10 @@ export function saveOpenAIOAuthTokens(tokens: OpenAIOAuthTokens): {
 
 const getOpenAIOAuthTokensCached = memoize(
   (cacheKey: string): OpenAIOAuthTokens | null => {
-    if (cacheKey !== SECURE_STORAGE_CACHE_KEY) {
-      return readDesktopTokenFileSync(cacheKey)
+    if (cacheKey.startsWith(FILE_CACHE_KEY_PREFIX)) {
+      return readDesktopTokenFileSync(
+        cacheKey.slice(FILE_CACHE_KEY_PREFIX.length),
+      )
     }
 
     try {
@@ -145,8 +148,9 @@ const getOpenAIOAuthTokensCached = memoize(
 )
 
 export function getOpenAIOAuthTokens(): OpenAIOAuthTokens | null {
+  const filePath = getDesktopTokenFilePath()
   return getOpenAIOAuthTokensCached(
-    getDesktopTokenFilePath() ?? SECURE_STORAGE_CACHE_KEY,
+    filePath ? `${FILE_CACHE_KEY_PREFIX}${filePath}` : SECURE_STORAGE_CACHE_KEY,
   )
 }
 

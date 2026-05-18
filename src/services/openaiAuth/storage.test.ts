@@ -20,6 +20,7 @@ describe('OpenAI OAuth desktop token file storage', () => {
   let originalConfigDir: string | undefined
   let originalHome: string | undefined
   let originalUserProfile: string | undefined
+  let originalCwd: string
 
   beforeEach(async () => {
     tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'openai-oauth-storage-'))
@@ -28,6 +29,7 @@ describe('OpenAI OAuth desktop token file storage', () => {
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
     originalHome = process.env.HOME
     originalUserProfile = process.env.USERPROFILE
+    originalCwd = process.cwd()
     process.env.CLAUDE_CONFIG_DIR = tmpDir
     process.env.HOME = tmpDir
     process.env.USERPROFILE = tmpDir
@@ -57,6 +59,7 @@ describe('OpenAI OAuth desktop token file storage', () => {
     } else {
       process.env.USERPROFILE = originalUserProfile
     }
+    process.chdir(originalCwd)
     clearOpenAIOAuthTokenCache()
     await fsp.rm(tmpDir, { recursive: true, force: true })
   })
@@ -228,6 +231,39 @@ describe('OpenAI OAuth desktop token file storage', () => {
 
     process.env.OPENAI_CODEX_OAUTH_FILE = tokenPathB
     expect(getOpenAIOAuthTokens()?.accessToken).toBe('access-b')
+  })
+
+  test('prefers env-pinned file authority when OPENAI_CODEX_OAUTH_FILE matches the secure-storage sentinel', async () => {
+    const sentinelPath = '__secure-storage__'
+    seedSecureStorage({
+      accessToken: 'secure-access',
+      refreshToken: 'secure-refresh',
+      expiresAt: 4_100_000_000_000,
+    })
+
+    process.chdir(tmpDir)
+    process.env.OPENAI_CODEX_OAUTH_FILE = sentinelPath
+    await fsp.writeFile(
+      path.join(tmpDir, sentinelPath),
+      JSON.stringify({
+        accessToken: 'file-access',
+        refreshToken: 'file-refresh',
+        expiresAt: 4_100_000_000_123,
+      }),
+      'utf-8',
+    )
+    clearOpenAIOAuthTokenCache()
+
+    expect(getOpenAIOAuthTokens()).toMatchObject({
+      accessToken: 'file-access',
+      refreshToken: 'file-refresh',
+      expiresAt: 4_100_000_000_123,
+    })
+    await expect(getOpenAIOAuthTokensAsync()).resolves.toMatchObject({
+      accessToken: 'file-access',
+      refreshToken: 'file-refresh',
+      expiresAt: 4_100_000_000_123,
+    })
   })
 
   test('cleans up tmp file if desktop token rename fails', async () => {
