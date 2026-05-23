@@ -97,6 +97,15 @@ function extractH5AccessAddressDraft(baseUrl: string | null): string {
   }
 }
 
+function extractHostnameFromUrl(value: string | null): string | null {
+  if (!value) return null
+  try {
+    return new URL(value).hostname || null
+  } catch {
+    return null
+  }
+}
+
 function extractH5AccessPort(baseUrl: string | null): string | null {
   if (!baseUrl) return null
 
@@ -2509,6 +2518,7 @@ function GeneralSettings() {
 function H5AccessSettings() {
   const {
     h5Access,
+    h5AccessDiagnostics,
     h5AccessError,
     enableH5Access,
     disableH5Access,
@@ -2574,6 +2584,17 @@ function H5AccessSettings() {
       await updateH5AccessSettings({
         publicBaseUrl: h5NextPublicBaseUrl,
       })
+    })
+  }
+
+  const handleH5SwitchToSuggestedHost = async () => {
+    const suggested = h5AccessDiagnostics?.suggestedHost
+    if (!suggested) return
+    await runH5Action(async () => {
+      // Build URL using current port if available, otherwise let backend pick.
+      const port = extractH5AccessPort(h5Access.publicBaseUrl)
+      const nextUrl = port ? `http://${suggested}:${port}` : `http://${suggested}`
+      await updateH5AccessSettings({ publicBaseUrl: nextUrl })
     })
   }
 
@@ -2676,6 +2697,50 @@ function H5AccessSettings() {
               {h5Access.enabled ? t('settings.general.h5AccessStatusEnabled') : t('settings.general.h5AccessDisabledValue')}
             </span>
           </div>
+
+          {h5AccessDiagnostics?.storedHostStaleness === 'unreachable' && h5AccessDiagnostics.storedPublicBaseUrl ? (
+            <div
+              data-testid="h5-access-stale-host-banner"
+              className="mt-4 rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-3 text-xs leading-5 text-[var(--color-text-primary)]"
+            >
+              <div className="font-semibold">
+                {t('settings.general.h5AccessStaleHostTitle')}
+              </div>
+              <div className="mt-1 text-[var(--color-text-secondary)]">
+                {h5AccessDiagnostics.suggestedHost
+                  ? t('settings.general.h5AccessStaleHostBody', {
+                      storedHost: extractHostnameFromUrl(h5AccessDiagnostics.storedPublicBaseUrl) ?? h5AccessDiagnostics.storedPublicBaseUrl,
+                    })
+                  : t('settings.general.h5AccessStaleHostNoSuggestion', {
+                      storedHost: extractHostnameFromUrl(h5AccessDiagnostics.storedPublicBaseUrl) ?? h5AccessDiagnostics.storedPublicBaseUrl,
+                    })}
+              </div>
+              {h5AccessDiagnostics.suggestedHost && (
+                <div className="mt-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={h5ActionRunning}
+                    onClick={() => void handleH5SwitchToSuggestedHost()}
+                    data-testid="h5-access-stale-host-apply"
+                  >
+                    {t('settings.general.h5AccessStaleHostApply', {
+                      suggestedHost: h5AccessDiagnostics.suggestedHost,
+                    })}
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {h5AccessDiagnostics?.storedHostStaleness === 'proxy' ? (
+            <div
+              data-testid="h5-access-proxy-note"
+              className="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] px-3 py-2 text-xs leading-5 text-[var(--color-text-tertiary)]"
+            >
+              {t('settings.general.h5AccessProxyNote')}
+            </div>
+          ) : null}
 
           <div className="mt-4 grid grid-cols-1 gap-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
