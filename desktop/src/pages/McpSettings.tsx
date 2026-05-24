@@ -6,7 +6,7 @@ import { useTranslation } from '../i18n'
 import { useUIStore } from '../stores/uiStore'
 import { useMcpStore } from '../stores/mcpStore'
 import { useSessionStore } from '../stores/sessionStore'
-import type { McpServerRecord, McpUpsertPayload } from '../types/mcp'
+import type { McpServerRecord, McpUpsertPayload, McpWritableScope } from '../types/mcp'
 
 type EditorMode =
   | { type: 'list' }
@@ -29,6 +29,7 @@ type KeyValueRow = {
 
 type McpDraft = {
   name: string
+  scope: McpWritableScope
   transport: TransportKind
   command: string
   args: StringRow[]
@@ -61,6 +62,8 @@ const MCP_GROUP_ORDER: McpGroupKey[] = [
   'dynamic',
 ]
 
+const WRITABLE_SCOPES: McpWritableScope[] = ['local', 'project', 'user']
+
 const STATUS_TONE: Record<McpServerRecord['status'], string> = {
   connected: 'bg-[var(--color-inspector-success-bg)] text-[var(--color-inspector-success)] border-[var(--color-border)]',
   checking: 'bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)] border-[var(--color-border)]',
@@ -85,6 +88,7 @@ function createKeyValueRow(key = '', value = ''): KeyValueRow {
 function createEmptyDraft(): McpDraft {
   return {
     name: '',
+    scope: 'local',
     transport: 'stdio',
     command: '',
     args: [createStringRow('')],
@@ -95,6 +99,10 @@ function createEmptyDraft(): McpDraft {
     oauthClientId: '',
     oauthCallbackPort: '',
   }
+}
+
+function asWritableScope(scope: string): McpWritableScope {
+  return scope === 'project' || scope === 'user' ? scope : 'local'
 }
 
 function isStdioConfig(config: McpServerRecord['config']): config is Extract<McpServerRecord['config'], { type: 'stdio' }> {
@@ -108,6 +116,7 @@ function isRemoteConfig(config: McpServerRecord['config']): config is Extract<Mc
 function draftFromServer(server: McpServerRecord): McpDraft {
   const base = createEmptyDraft()
   base.name = server.name
+  base.scope = asWritableScope(server.scope)
 
   if (isStdioConfig(server.config)) {
     return {
@@ -155,7 +164,7 @@ function rowsToList(rows: StringRow[]) {
 function buildPayload(draft: McpDraft): McpUpsertPayload {
   if (draft.transport === 'stdio') {
     return {
-      scope: 'user',
+      scope: draft.scope,
       config: {
         type: 'stdio',
         command: draft.command.trim(),
@@ -170,7 +179,7 @@ function buildPayload(draft: McpDraft): McpUpsertPayload {
   const oauthClientId = draft.oauthClientId.trim()
 
   return {
-    scope: 'user',
+    scope: draft.scope,
     config: {
       type: draft.transport,
       url: draft.url.trim(),
@@ -506,7 +515,7 @@ export function McpSettings() {
   const handleToggle = async (server: McpServerRecord) => {
     setBusyServerName(server.name)
     try {
-      const updated = await toggleServer(server, resolveOperationCwd(server))
+      const updated = await toggleServer(server, resolveOperationCwd(server), activeSessionId ?? undefined)
       addToast({
         type: 'success',
         message: updated.enabled ? t('settings.mcp.toast.enabled', { name: server.name }) : t('settings.mcp.toast.disabled', { name: server.name }),
@@ -800,9 +809,33 @@ export function McpSettings() {
             <div className="text-sm font-semibold text-[var(--color-text-primary)] mb-2">
               {t('settings.mcp.form.scope')}
             </div>
-            <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">
-              {t('settings.mcp.globalOnlyHint')}
-            </p>
+            <div className="grid gap-2 md:grid-cols-3">
+              {WRITABLE_SCOPES.map((scope) => {
+                const active = draft.scope === scope
+                return (
+                  <button
+                    key={scope}
+                    type="button"
+                    onClick={() => setDraftField('scope', scope)}
+                    className={`rounded-[var(--radius-md)] border p-3 text-left transition-colors ${
+                      active
+                        ? 'border-[var(--color-border-focus)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                        : 'border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+                    }`}
+                  >
+                    <span className="block text-sm font-semibold">{t(`settings.mcp.scope.${scope}`)}</span>
+                    <span className="mt-1 block text-xs leading-5 text-[var(--color-text-tertiary)]">
+                      {t(`settings.mcp.scopeDesc.${scope}`)}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {currentWorkDir && (draft.scope === 'local' || draft.scope === 'project') && (
+              <p className="mt-3 break-all text-xs leading-5 text-[var(--color-text-tertiary)]">
+                {t('settings.mcp.currentProjectHint', { path: currentWorkDir })}
+              </p>
+            )}
           </section>
 
           <section className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">

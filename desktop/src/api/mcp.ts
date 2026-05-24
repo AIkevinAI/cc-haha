@@ -33,8 +33,14 @@ export const mcpApi = {
     return api.delete<{ ok: true }>(`/api/mcp/${encodeURIComponent(name)}?${query.toString()}`)
   },
 
-  toggle: (name: string, cwd?: string) => {
-    return api.post<{ server: McpServerRecord }>(`/api/mcp/${encodeURIComponent(name)}/toggle`, cwd ? { cwd } : {})
+  toggle: (name: string, cwd?: string, sessionId?: string) => {
+    return api.post<{ server: McpServerRecord }>(
+      `/api/mcp/${encodeURIComponent(name)}/toggle`,
+      {
+        ...(cwd ? { cwd } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      },
+    )
   },
 
   reconnect: (name: string, cwd?: string) => {

@@ -49,7 +49,7 @@ describe('McpSettings', () => {
     })
   })
 
-  it('loads only global MCP servers on mount', () => {
+  it('loads MCP servers for the active project on mount', () => {
     const fetchServers = vi.fn()
     useMcpStore.setState({ fetchServers })
 
@@ -219,7 +219,59 @@ describe('McpSettings', () => {
       fireEvent.click(screen.getByRole('switch'))
     })
 
-    expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project')
+    expect(toggleServer).toHaveBeenCalledWith(server, '/workspace/project', 'session-1')
+  })
+
+  it('creates local MCP servers by default to match the CLI', async () => {
+    const createdServer = {
+      name: 'context7',
+      scope: 'local',
+      transport: 'stdio',
+      enabled: true,
+      status: 'checking' as const,
+      statusLabel: 'Checking',
+      configLocation: '/workspace/project/.claude.json',
+      summary: 'npx @upstash/context7-mcp',
+      canEdit: true,
+      canRemove: true,
+      canReconnect: true,
+      canToggle: true,
+      projectPath: '/workspace/project',
+      config: { type: 'stdio' as const, command: 'npx', args: ['@upstash/context7-mcp'], env: {} },
+    }
+    const createServer = vi.fn().mockResolvedValue(createdServer)
+
+    useMcpStore.setState({ createServer })
+
+    render(<McpSettings />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /add server/i }))
+    })
+
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'context7' } })
+    fireEvent.change(screen.getByLabelText(/Command to launch/), { target: { value: 'npx' } })
+    fireEvent.change(screen.getByPlaceholderText('chrome-devtools-mcp@latest'), {
+      target: { value: '@upstash/context7-mcp' },
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
+
+    expect(createServer).toHaveBeenCalledWith(
+      'context7',
+      {
+        scope: 'local',
+        config: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['@upstash/context7-mcp'],
+          env: {},
+        },
+      },
+      '/workspace/project',
+    )
   })
 
   it('shows reconnecting status immediately in the detail view', async () => {
