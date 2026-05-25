@@ -2053,6 +2053,94 @@ describe('MessageList nested tool calls', () => {
     expect(screen.queryByRole('button', { name: 'Latest' })).toBeNull()
   })
 
+  it('ignores one-pixel content resize jitter while pinned to active thinking output', async () => {
+    let resizeCallback: ResizeObserverCallback | null = null
+    class TestResizeObserver {
+      observe = vi.fn()
+      unobserve = vi.fn()
+      disconnect = vi.fn()
+
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback
+      }
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          chatState: 'thinking',
+          activeThinkingId: 'thinking-1',
+          messages: [
+            {
+              id: 'user-1',
+              type: 'user_text',
+              content: '触发 Windows WebView2 细微重排',
+              timestamp: 1,
+            },
+            {
+              id: 'thinking-1',
+              type: 'thinking',
+              content: '正在分析一个静态问题',
+              timestamp: 2,
+            },
+          ],
+        }),
+      },
+    })
+
+    const { container } = render(<MessageList />)
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
+    let scrollTop = 600
+    let scrollTopWriteCount = 0
+    let scrollHeight = 1000
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTopWriteCount += 1
+        scrollTop = value
+      },
+    })
+
+    await waitFor(() => {
+      expect(resizeCallback).not.toBeNull()
+    })
+    await waitForProgrammaticScrollReset()
+
+    const makeResizeEntry = (height: number) => ([{
+      contentRect: { height },
+    } as ResizeObserverEntry])
+
+    act(() => {
+      resizeCallback?.(makeResizeEntry(400), {} as ResizeObserver)
+    })
+    expect(scrollTop).toBe(600)
+
+    scrollTopWriteCount = 0
+    act(() => {
+      resizeCallback?.(makeResizeEntry(401), {} as ResizeObserver)
+    })
+    act(() => {
+      resizeCallback?.(makeResizeEntry(400), {} as ResizeObserver)
+    })
+
+    expect(scrollTopWriteCount).toBe(0)
+    expect(scrollTop).toBe(600)
+
+    scrollHeight = 1040
+    act(() => {
+      resizeCallback?.(makeResizeEntry(420), {} as ResizeObserver)
+    })
+
+    expect(scrollTop).toBe(640)
+  })
+
   it('does not pull a completed session back to the bottom when content resizes', async () => {
     const scrollIntoView = vi.fn()
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
