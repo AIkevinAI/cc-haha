@@ -17,7 +17,7 @@ export type PreviewLinkDeps = {
  * runs `path.resolve(workDir, relPath)`, so an absolute path is resolved as an
  * absolute-within-workspace path and sandbox-checked against the work dir root.
  */
-function previewFsUrl(base: string, sessionId: string, filePath: string): string {
+export function previewFsUrl(base: string, sessionId: string, filePath: string): string {
   return `${base.replace(/\/$/, '')}/preview-fs/${encodeURIComponent(sessionId)}/${filePath.replace(/^\/+/, '/')}`
 }
 
