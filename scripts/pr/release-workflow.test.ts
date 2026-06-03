@@ -47,6 +47,28 @@ describe('release desktop workflow', () => {
     }
   })
 
+  test('desktop package includes Linux deb metadata required by electron-builder', () => {
+    const desktopPackage = JSON.parse(readFileSync('desktop/package.json', 'utf8')) as {
+      description?: string
+      homepage?: string
+      author?: {
+        name?: string
+        email?: string
+      }
+      build?: {
+        linux?: {
+          maintainer?: string
+        }
+      }
+    }
+
+    expect(desktopPackage.description).toBeTruthy()
+    expect(desktopPackage.homepage).toBe('https://github.com/NanmiCoder/cc-haha')
+    expect(desktopPackage.author?.name).toBe('NanmiCoder')
+    expect(desktopPackage.author?.email).toBe('relakkes@gmail.com')
+    expect(desktopPackage.build?.linux?.maintainer).toBe('NanmiCoder <relakkes@gmail.com>')
+  })
+
   test('release workflow requires macOS Gatekeeper launch approval before upload', () => {
     const workflow = readReleaseWorkflow()
     const gatekeeperStep = workflow.match(

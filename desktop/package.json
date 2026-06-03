@@ -2,6 +2,12 @@
   "name": "claude-code-desktop",
   "private": true,
   "version": "0.3.2",
+  "description": "Desktop coding agent workbench for Claude Code Haha.",
+  "homepage": "https://github.com/NanmiCoder/cc-haha",
+  "author": {
+    "name": "NanmiCoder",
+    "email": "relakkes@gmail.com"
+  },
   "type": "module",
   "main": "electron-dist/main.cjs",
   "build": {
@@ -50,7 +56,8 @@
         "deb"
       ],
       "icon": "src-tauri/icons",
-      "category": "Development"
+      "category": "Development",
+      "maintainer": "NanmiCoder <relakkes@gmail.com>"
     },
     "publish": [
       {
