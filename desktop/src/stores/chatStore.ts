@@ -1372,9 +1372,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const queuedMessage = (session?.queuedUserMessages ?? []).find((message) => message.id === messageId)
     if (!session || !queuedMessage) return
 
-    get().removeQueuedUserMessage(sessionId, messageId)
-
     if (session.chatState === 'idle') {
+      get().removeQueuedUserMessage(sessionId, messageId)
       get().sendMessage(
         sessionId,
         queuedMessage.content,
@@ -1386,6 +1385,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       )
       return
     }
+
+    const now = Date.now()
+    set((state) => ({
+      sessions: updateSessionIn(state.sessions, sessionId, (currentSession) => {
+        const pendingText = `${currentSession.streamingText}${consumePendingDelta(sessionId)}`
+        const baseMessages = pendingText.trim()
+          ? appendAssistantTextMessage(currentSession.messages, pendingText, now)
+          : currentSession.messages
+        return {
+          messages: appendOptimisticQueuedUserMessage(baseMessages, queuedMessage, now),
+          queuedUserMessages: (currentSession.queuedUserMessages ?? [])
+            .filter((message) => message.id !== messageId),
+          ...(pendingText.trim() ? { streamingText: '' } : {}),
+        }
+      }),
+    }))
 
     wsManager.send(sessionId, {
       type: 'user_message',
@@ -2740,6 +2755,19 @@ function appendReplayedUserMessage(
   if (!displayContent) return messages
 
   const modelContent = parsed.modelContent ?? content.trim()
+  const optimisticIndex = findOptimisticQueuedUserMessageIndex(messages, modelContent)
+  if (optimisticIndex >= 0) {
+    const optimisticMessage = messages[optimisticIndex]
+    if (optimisticMessage?.type === 'user_text') {
+      const { optimisticQueued: _optimisticQueued, ...confirmedMessage } = optimisticMessage
+      return [
+        ...messages.slice(0, optimisticIndex),
+        confirmedMessage,
+        ...messages.slice(optimisticIndex + 1),
+      ]
+    }
+  }
+
   const last = messages[messages.length - 1]
   if (
     last?.type === 'user_text' &&
@@ -2759,6 +2787,63 @@ function appendReplayedUserMessage(
       timestamp,
     },
   ]
+}
+
+function appendOptimisticQueuedUserMessage(
+  messages: UIMessage[],
+  message: QueuedUserMessage,
+  timestamp: number,
+): UIMessage[] {
+  const displayContent = message.displayContent.trim()
+  const modelContent = message.content.trim()
+  const attachments = mapQueuedDisplayAttachments(message.displayAttachments)
+  if (!displayContent && !attachments) return messages
+
+  return [
+    ...messages,
+    {
+      id: nextId(),
+      type: 'user_text',
+      content: displayContent,
+      ...(modelContent && modelContent !== displayContent ? { modelContent } : {}),
+      ...(attachments ? { attachments } : {}),
+      timestamp,
+      optimisticQueued: true,
+    },
+  ]
+}
+
+function mapQueuedDisplayAttachments(attachments?: AttachmentRef[]): UIAttachment[] | undefined {
+  if (!attachments?.length) return undefined
+  return attachments.map((attachment) => ({
+    type: attachment.type,
+    name: attachment.name || attachment.path || attachment.mimeType || attachment.type,
+    path: attachment.path,
+    data: attachment.data,
+    mimeType: attachment.mimeType,
+    isDirectory: attachment.isDirectory,
+    lineStart: attachment.lineStart,
+    lineEnd: attachment.lineEnd,
+    note: attachment.note,
+    quote: attachment.quote,
+  }))
+}
+
+function findOptimisticQueuedUserMessageIndex(
+  messages: UIMessage[],
+  modelContent: string,
+): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (
+      message?.type === 'user_text' &&
+      message.optimisticQueued &&
+      (message.modelContent ?? message.content).trim() === modelContent
+    ) {
+      return index
+    }
+  }
+  return -1
 }
 
 function replaceQueuedMessageDisplayContent(

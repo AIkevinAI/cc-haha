@@ -452,22 +452,27 @@ describe('ChatInput file mentions', () => {
       attachments: [],
     })
     expect(screen.queryByTestId('pending-user-message')).not.toBeInTheDocument()
-    expect(useChatStore.getState().sessions[sessionId]?.messages.at(-1)).toMatchObject({
-      type: 'assistant_text',
-      content: 'working',
-    })
+    expect(useChatStore.getState().sessions[sessionId]?.messages).toMatchObject([
+      { type: 'assistant_text', content: 'workingstill answering' },
+      { type: 'user_text', content: 'please adjust the current direction' },
+    ])
 
     act(() => {
+      useChatStore.getState().handleServerMessage(sessionId, {
+        type: 'tool_result',
+        toolUseId: 'tool-1',
+        content: 'tool finished',
+        isError: false,
+      })
       useChatStore.getState().handleServerMessage(sessionId, {
         type: 'user_message_replay',
         content: 'please adjust the current direction',
       })
     })
 
-    expect(useChatStore.getState().sessions[sessionId]?.messages.at(-1)).toMatchObject({
-      type: 'user_text',
-      content: 'please adjust the current direction',
-    })
+    const guidedMessages = useChatStore.getState().sessions[sessionId]?.messages
+      .filter((message) => message.type === 'user_text' && message.content === 'please adjust the current direction')
+    expect(guidedMessages).toHaveLength(1)
   })
 
   it('edits and deletes queued prompts without sending them', async () => {
