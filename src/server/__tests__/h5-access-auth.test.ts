@@ -578,6 +578,30 @@ describe('remote H5 auth and CORS integration', () => {
     })
   })
 
+  test('keeps the recoverable token readable for loopback but blocked for remote browsers', async () => {
+    const h5AccessService = new H5AccessService()
+    const { token } = await h5AccessService.enable()
+
+    // Local desktop (loopback, no foreign Origin) can recover the full token
+    // at any time — this is what keeps the QR code alive across restarts.
+    const localResponse = await fetch(`${baseUrl}/api/h5-access`)
+    expect(localResponse.status).toBe(200)
+    const localPayload = await localResponse.json() as { settings: { token: string | null } }
+    expect(localPayload.settings.token).toBe(token)
+
+    // A remote H5 browser must never reach the settings surface, even with
+    // the valid token: the control plane stays local-only.
+    const remoteResponse = await fetch(`${baseUrl}/api/h5-access`, {
+      headers: {
+        Origin: PHONE_ORIGIN,
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    expect(remoteResponse.status).toBe(403)
+
+    await h5AccessService.disable()
+  })
+
   test('blocks remote preflight requests to the local H5 access control plane', async () => {
     const response = await fetch(`${baseUrl}/api/h5-access/enable`, {
       method: 'OPTIONS',

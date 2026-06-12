@@ -221,9 +221,12 @@ describe('Settings > General tab', () => {
       },
       h5Access: {
         enabled: false,
+        token: null,
         tokenPreview: null,
         allowedOrigins: [],
         publicBaseUrl: null,
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
       h5AccessDiagnostics: null,
       h5AccessError: null,
@@ -305,18 +308,20 @@ describe('Settings > General tab', () => {
           h5Access: {
             ...current,
             enabled: true,
+            token: 'h5_default_generated_token',
             tokenPreview: 'h5_default_generated_token'.slice(0, 8),
           },
         })
         return 'h5_default_generated_token'
       }),
       disableH5Access: vi.fn().mockImplementation(async () => {
+        // Mirrors the server: disabling keeps the stored token so a later
+        // re-enable restores access for already-paired phones.
         const current = useSettingsStore.getState().h5Access
         useSettingsStore.setState({
           h5Access: {
             ...current,
             enabled: false,
-            tokenPreview: null,
           },
         })
       }),
@@ -326,6 +331,7 @@ describe('Settings > General tab', () => {
           h5Access: {
             ...current,
             enabled: true,
+            token: 'h5_default_regenerated_token',
             tokenPreview: 'h5_default_regenerated_token'.slice(0, 8),
           },
         })
@@ -913,9 +919,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: false,
+        token: null,
         tokenPreview: null,
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.0.102:3456',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -940,9 +949,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: false,
+        token: null,
         tokenPreview: null,
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.0.102:3456',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -973,9 +985,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5oldtok',
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.0.102:3456',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -995,13 +1010,184 @@ describe('Settings > General tab', () => {
     expect(await within(section).findByAltText('H5 access QR code')).toBeInTheDocument()
   })
 
+  it('renders the QR code and token from persisted settings without any action (issue #767)', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:3456',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+
+    // No enable/regenerate click this session: everything comes from the
+    // persisted token, so a desktop restart no longer loses the QR code.
+    expect(await within(section).findByAltText('H5 access QR code')).toBeInTheDocument()
+    expect(within(section).getByText('http://192.168.0.102:3456/?serverUrl=http%3A%2F%2F192.168.0.102%3A3456&h5Token=h5_persisted_token')).toBeInTheDocument()
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Show token' }))
+    expect(within(section).getByText('h5_persisted_token')).toBeInTheDocument()
+  })
+
+  it('saves a fixed port together with the host', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:54064',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    fireEvent.change(within(section).getByLabelText('Fixed port'), {
+      target: { value: '28670' },
+    })
+
+    await act(async () => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Save H5 settings' }))
+    })
+
+    expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
+      publicBaseUrl: 'http://192.168.0.102:54064',
+      fixedPort: 28670,
+      disconnectGraceSeconds: null,
+    })
+  })
+
+  it('rejects an out-of-range fixed port before saving', () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:54064',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    fireEvent.change(within(section).getByLabelText('Fixed port'), {
+      target: { value: '99' },
+    })
+
+    expect(within(section).getByText('Port must be an integer between 1024 and 65535.')).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'Save H5 settings' })).toBeDisabled()
+    expect(useSettingsStore.getState().updateH5AccessSettings).not.toHaveBeenCalled()
+  })
+
+  it('saves a custom disconnect grace period (issue #764)', async () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:54064',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    fireEvent.change(within(section).getByLabelText('Disconnect grace (sec)'), {
+      target: { value: '600' },
+    })
+
+    await act(async () => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Save H5 settings' }))
+    })
+
+    expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
+      publicBaseUrl: 'http://192.168.0.102:54064',
+      fixedPort: null,
+      disconnectGraceSeconds: 600,
+    })
+  })
+
+  it('rejects an out-of-range disconnect grace period before saving', () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:54064',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+    fireEvent.change(within(section).getByLabelText('Disconnect grace (sec)'), {
+      target: { value: '2' },
+    })
+
+    expect(within(section).getByText('Must be an integer between 5 and 86400 seconds.')).toBeInTheDocument()
+    expect(within(section).getByRole('button', { name: 'Save H5 settings' })).toBeDisabled()
+    expect(useSettingsStore.getState().updateH5AccessSettings).not.toHaveBeenCalled()
+  })
+
+  it('shows a restart note while the saved fixed port is not active yet', () => {
+    useSettingsStore.setState({
+      h5Access: {
+        enabled: true,
+        token: 'h5_persisted_token',
+        tokenPreview: 'h5_pers...oken',
+        allowedOrigins: [],
+        publicBaseUrl: 'http://192.168.0.102:54064',
+        fixedPort: 28670,
+        disconnectGraceSeconds: null,
+      },
+      h5AccessDiagnostics: {
+        storedHostStaleness: 'ok',
+        storedPublicBaseUrl: 'http://192.168.0.102:54064',
+        effectivePublicBaseUrl: 'http://192.168.0.102:54064',
+        suggestedHost: null,
+        localInterfaceHosts: ['192.168.0.102'],
+        activePort: 54064,
+      },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByText('H5 Access'))
+    const section = screen.getByRole('region', { name: 'H5 Access' })
+
+    const note = within(section).getByTestId('h5-access-fixed-port-restart-note')
+    expect(note.textContent).toContain('28670')
+    expect(note.textContent).toContain('54064')
+  })
+
   it('shows the generated H5 token as a fallback when requested', async () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: false,
+        token: null,
         tokenPreview: null,
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.0.102:3456',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -1023,9 +1209,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5url123',
         allowedOrigins: ['https://phone.example'],
         publicBaseUrl: 'https://phone.example/app',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -1059,9 +1248,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5a1b2c3',
         allowedOrigins: [],
         publicBaseUrl: 'http://172.20.16.1:54064',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -1080,6 +1272,8 @@ describe('Settings > General tab', () => {
 
     expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
       publicBaseUrl: 'http://192.168.1.100:54064',
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
   })
 
@@ -1087,9 +1281,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: false,
+        token: null,
         tokenPreview: 'h5a1b2c3',
         allowedOrigins: ['https://old.example'],
         publicBaseUrl: null,
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
     render(<Settings />)
@@ -1107,6 +1304,8 @@ describe('Settings > General tab', () => {
 
     expect(useSettingsStore.getState().updateH5AccessSettings).toHaveBeenCalledWith({
       publicBaseUrl: 'https://phone.example/app',
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
   })
 
@@ -1114,9 +1313,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5a1b2c3',
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.1.207:55379',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
       h5AccessDiagnostics: {
         storedHostStaleness: 'unreachable',
@@ -1148,9 +1350,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5a1b2c3',
         allowedOrigins: [],
         publicBaseUrl: 'https://h5.mydomain.com',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
       h5AccessDiagnostics: {
         storedHostStaleness: 'proxy',
@@ -1172,9 +1377,12 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5a1b2c3',
         allowedOrigins: [],
         publicBaseUrl: 'http://192.168.0.105:55379',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
       h5AccessDiagnostics: {
         storedHostStaleness: 'ok',

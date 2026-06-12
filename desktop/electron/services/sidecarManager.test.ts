@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import net from 'node:net'
 import path from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
   buildSidecarEnv,
@@ -9,11 +10,18 @@ import {
   httpToWebSocketUrl,
   killSidecar,
   mergeProxyEnv,
+  parseH5FixedPort,
+  preferredServerPorts,
   proxyUrlFromElectronProxyRules,
   pushStartupLog,
+  readH5FixedPort,
+  readLastServerPort,
+  reserveLocalPort,
+  reserveServerPort,
   resolveHostTriple,
   spawnSidecar,
   windowsPowerShellOverride,
+  writeLastServerPort,
   type SidecarChild,
 } from './sidecarManager'
 
@@ -190,5 +198,68 @@ describe('Electron sidecar manager', () => {
     // never applies off Windows
     expect(windowsPowerShellOverride('pwsh', 'darwin')).toBeNull()
     expect(windowsPowerShellOverride('powershell.exe', 'linux')).toBeNull()
+  })
+
+  it('parses only in-range integer h5Access.fixedPort values', () => {
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":28670}}')).toBe(28670)
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":80}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":70000}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":"3456"}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{"fixedPort":null}}')).toBeNull()
+    expect(parseH5FixedPort('{"h5Access":{}}')).toBeNull()
+    expect(parseH5FixedPort('{}')).toBeNull()
+    expect(parseH5FixedPort('not json')).toBeNull()
+  })
+
+  it('persists and prioritizes preferred server ports from the config dir', () => {
+    const configDir = mkdtempSync(path.join(tmpdir(), 'cchh-server-state-'))
+    const env = { CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv
+    try {
+      // Nothing stored yet: no preferred ports.
+      expect(preferredServerPorts(env)).toEqual([])
+
+      // Sticky port from the previous run.
+      writeLastServerPort(50123, env)
+      expect(readLastServerPort(env)).toBe(50123)
+      expect(preferredServerPorts(env)).toEqual([50123])
+
+      // An explicit fixed port wins over the sticky port.
+      mkdirSync(path.join(configDir, 'cc-haha'), { recursive: true })
+      writeFileSync(
+        path.join(configDir, 'cc-haha', 'settings.json'),
+        JSON.stringify({ h5Access: { fixedPort: 28670 } }),
+        'utf-8',
+      )
+      expect(readH5FixedPort(env)).toBe(28670)
+      expect(preferredServerPorts(env)).toEqual([28670, 50123])
+
+      // Identical fixed and sticky ports are not duplicated.
+      writeLastServerPort(28670, env)
+      expect(preferredServerPorts(env)).toEqual([28670])
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reserves a free preferred port and falls back when it is taken', async () => {
+    // Reserve a random free port, verify preference picks it while free.
+    const freePort = await reserveLocalPort('127.0.0.1')
+    await expect(reserveServerPort('127.0.0.1', [freePort])).resolves.toBe(freePort)
+
+    // Occupy it and verify the fallback hands out a different port.
+    const blocker = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject)
+      blocker.listen(freePort, '127.0.0.1', () => resolve())
+    })
+    try {
+      const fallback = await reserveServerPort('127.0.0.1', [freePort])
+      expect(fallback).not.toBe(freePort)
+    } finally {
+      await new Promise<void>(resolve => blocker.close(() => resolve()))
+    }
+
+    // Invalid entries are skipped without throwing.
+    await expect(reserveServerPort('127.0.0.1', [0, -1, 1.5, 70000])).resolves.toBeGreaterThan(0)
   })
 })

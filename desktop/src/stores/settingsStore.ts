@@ -115,6 +115,8 @@ type SettingsStore = {
   updateH5AccessSettings: (input: {
     allowedOrigins?: string[]
     publicBaseUrl?: string | null
+    fixedPort?: number | null
+    disconnectGraceSeconds?: number | null
   }) => Promise<void>
   setResponseLanguage: (language: string) => Promise<void>
   fetchAppMode: () => Promise<void>
@@ -128,9 +130,12 @@ type NetworkSettingsInput = Partial<Omit<NetworkSettings, 'proxy'>> & {
 
 const DEFAULT_H5_ACCESS_SETTINGS: H5AccessSettings = {
   enabled: false,
+  token: null,
   tokenPreview: null,
   allowedOrigins: [],
   publicBaseUrl: null,
+  fixedPort: null,
+  disconnectGraceSeconds: null,
 }
 
 const DEFAULT_DESKTOP_TERMINAL_SETTINGS: DesktopTerminalSettings = {
@@ -690,9 +695,12 @@ function normalizeDesktopTerminalSettings(
 function normalizeH5AccessSettings(settings: H5AccessSettings | undefined): H5AccessSettings {
   return {
     enabled: settings?.enabled === true,
+    token: typeof settings?.token === 'string' && settings.token ? settings.token : null,
     tokenPreview: settings?.tokenPreview ?? null,
     allowedOrigins: Array.isArray(settings?.allowedOrigins) ? settings.allowedOrigins : [],
     publicBaseUrl: settings?.publicBaseUrl ?? null,
+    fixedPort: typeof settings?.fixedPort === 'number' ? settings.fixedPort : null,
+    disconnectGraceSeconds: typeof settings?.disconnectGraceSeconds === 'number' ? settings.disconnectGraceSeconds : null,
   }
 }
 

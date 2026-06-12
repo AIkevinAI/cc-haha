@@ -34,6 +34,7 @@ import {
   LOCAL_COMMAND_STDOUT_TAG,
 } from '../../constants/xml.js'
 import { shouldCreateWorktreeForSessionLaunch } from '../services/repositoryLaunchService.js'
+import { getDisconnectGraceMs } from './disconnectGraceConfig.js'
 
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
@@ -53,9 +54,15 @@ const sessionSlashCommands = new Map<string, SessionSlashCommand[]>()
  * Timers for delayed session cleanup after client disconnect.
  * If a client reconnects before the timer fires, the timer is cancelled.
  */
-const CLIENT_DISCONNECT_CLEANUP_MS = 30_000
 const PENDING_PERMISSION_DISCONNECT_CLEANUP_MS = 30 * 60_000
 const sessionCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/**
+ * Per-session removers for the turn-completion watcher (issue #764). When the
+ * last client disconnects while a turn is still running, we let the turn finish
+ * in the background instead of killing the CLI, then start the idle grace timer
+ * once the result arrives. The remover is also cleared on reconnect/cleanup.
+ */
+const sessionDisconnectWatchers = new Map<string, () => void>()
 
 /**
  * Track sessions where user requested stop — suppress the CLI_ERROR that
@@ -166,6 +173,9 @@ export const handleWebSocket = {
       clearTimeout(pendingTimer)
       sessionCleanupTimers.delete(sessionId)
     }
+    // Cancel any "let the running turn finish, then clean up" watcher too —
+    // the session is observed again (issue #764).
+    cancelSessionDisconnectWatcher(sessionId)
 
     addActiveClient(sessionId, ws)
     if (prewarmPendingSessions.has(sessionId) || prewarmedSessions.has(sessionId)) {
@@ -261,20 +271,17 @@ export const handleWebSocket = {
       return
     }
 
-    computerUseApprovalService.cancelSession(sessionId)
+    // No clients left. A turn that is still running must finish in the
+    // background (issue #764) — never kill it just because a phone locked its
+    // screen. Defer cleanup until the turn completes, then apply the idle
+    // grace period. Sessions that are already idle go straight to the timer.
+    if (isSessionTurnActive(sessionId)) {
+      console.log(`[WS] Session ${sessionId} still running after disconnect; keeping CLI alive until the turn finishes`)
+      watchTurnCompletionForCleanup(sessionId)
+      return
+    }
 
-    // Schedule delayed cleanup. Sessions waiting on user input need a longer
-    // grace period so transient renderer disconnects do not abort the prompt.
-    const cleanupDelayMs = getDisconnectCleanupDelayMs(sessionId)
-    const cleanupTimer = setTimeout(() => {
-      sessionCleanupTimers.delete(sessionId)
-      if (!hasActiveClients(sessionId)) {
-        console.log(`[WS] Session ${sessionId} not reconnected after ${cleanupDelayMs}ms, stopping CLI subprocess`)
-        conversationService.stopSession(sessionId)
-        cleanupSessionRuntimeState(sessionId)
-      }
-    }, cleanupDelayMs)
-    sessionCleanupTimers.set(sessionId, cleanupTimer)
+    scheduleDisconnectCleanup(sessionId)
   },
 
   drain(ws: ServerWebSocket<WebSocketData>) {
@@ -1176,6 +1183,7 @@ function cleanupStreamState(sessionId: string) {
 }
 
 function cleanupSessionRuntimeState(sessionId: string) {
+  cancelSessionDisconnectWatcher(sessionId)
   cleanupStreamState(sessionId)
   sessionSlashCommands.delete(sessionId)
   sessionTitleState.delete(sessionId)
@@ -1894,10 +1902,78 @@ function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: st
   sendMessage(ws, { type: 'error', message, code })
 }
 
+/**
+ * Idle disconnect cleanup delay. A session waiting on a pending permission
+ * keeps the long 30-minute window so a transient renderer disconnect does not
+ * abort a prompt the user is about to answer. Otherwise we honor the
+ * user-configured grace period (issue #764).
+ */
 function getDisconnectCleanupDelayMs(sessionId: string): number {
   return conversationService.getPendingPermissionRequests(sessionId).length > 0
     ? PENDING_PERMISSION_DISCONNECT_CLEANUP_MS
-    : CLIENT_DISCONNECT_CLEANUP_MS
+    : getDisconnectGraceMs()
+}
+
+/**
+ * Whether the session is mid-turn (a user message was sent and no result has
+ * arrived yet). Such a turn must not be killed on disconnect.
+ */
+function isSessionTurnActive(sessionId: string): boolean {
+  return activeUserTurns.get(sessionId)?.messageSent === true
+}
+
+/**
+ * Start the idle grace timer for a disconnected, idle session. If no client
+ * reconnects before it fires, the CLI subprocess is stopped.
+ */
+function scheduleDisconnectCleanup(sessionId: string): void {
+  computerUseApprovalService.cancelSession(sessionId)
+
+  const existing = sessionCleanupTimers.get(sessionId)
+  if (existing) clearTimeout(existing)
+
+  const cleanupDelayMs = getDisconnectCleanupDelayMs(sessionId)
+  const cleanupTimer = setTimeout(() => {
+    sessionCleanupTimers.delete(sessionId)
+    if (!hasActiveClients(sessionId)) {
+      console.log(`[WS] Session ${sessionId} not reconnected after ${cleanupDelayMs}ms, stopping CLI subprocess`)
+      conversationService.stopSession(sessionId)
+      cleanupSessionRuntimeState(sessionId)
+    }
+  }, cleanupDelayMs)
+  sessionCleanupTimers.set(sessionId, cleanupTimer)
+}
+
+/**
+ * Keep a still-running session alive after the last client leaves, and start
+ * the idle grace timer only once the current turn completes (issue #764). If a
+ * client reconnects first, cancelSessionDisconnectWatcher() tears this down.
+ */
+function watchTurnCompletionForCleanup(sessionId: string): void {
+  cancelSessionDisconnectWatcher(sessionId)
+
+  const onComplete = (cliMsg: any) => {
+    if (cliMsg?.type !== 'result') return
+    cancelSessionDisconnectWatcher(sessionId)
+    // The turn finished while still unobserved — fall back to the idle timer.
+    if (!hasActiveClients(sessionId)) {
+      scheduleDisconnectCleanup(sessionId)
+    }
+  }
+
+  conversationService.onOutput(sessionId, onComplete)
+  sessionDisconnectWatchers.set(sessionId, () => {
+    conversationService.removeOutputCallback(sessionId, onComplete)
+  })
+}
+
+/** Remove any pending turn-completion watcher for a session. */
+function cancelSessionDisconnectWatcher(sessionId: string): void {
+  const remove = sessionDisconnectWatchers.get(sessionId)
+  if (remove) {
+    remove()
+    sessionDisconnectWatchers.delete(sessionId)
+  }
 }
 
 function replayPendingPermissionRequests(
@@ -2537,9 +2613,11 @@ export function getActiveSessionIds(): string[] {
 export function __resetWebSocketHandlerStateForTests(): void {
   for (const timer of sessionCleanupTimers.values()) clearTimeout(timer)
   for (const timer of prewarmIdleTimers.values()) clearTimeout(timer)
+  for (const remove of sessionDisconnectWatchers.values()) remove()
   activeSessions.clear()
   clientOutputCallbacks.clear()
   sessionCleanupTimers.clear()
+  sessionDisconnectWatchers.clear()
   prewarmPendingSessions.clear()
   prewarmedSessions.clear()
   prewarmIdleTimers.clear()
@@ -2547,4 +2625,9 @@ export function __resetWebSocketHandlerStateForTests(): void {
 
 export function __markPrewarmPendingForTests(sessionId: string): void {
   prewarmPendingSessions.add(sessionId)
+}
+
+/** Test hook: mark a session as mid-turn so disconnect keeps the CLI alive. */
+export function __markActiveTurnForTests(sessionId: string): void {
+  activeUserTurns.set(sessionId, { messageSent: true })
 }

@@ -1118,9 +1118,12 @@ describe('settingsStore H5 access behavior', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5_prev',
         allowedOrigins: ['https://prev.example'],
         publicBaseUrl: 'https://prev.example/app',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
 
@@ -1128,9 +1131,12 @@ describe('settingsStore H5 access behavior', () => {
 
     expect(useSettingsStore.getState().h5Access).toEqual({
       enabled: false,
+      token: null,
       tokenPreview: null,
       allowedOrigins: [],
       publicBaseUrl: null,
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
     expect(useSettingsStore.getState().h5AccessError).toBeNull()
   })
@@ -1168,9 +1174,12 @@ describe('settingsStore H5 access behavior', () => {
     useSettingsStore.setState({
       h5Access: {
         enabled: true,
+        token: null,
         tokenPreview: 'h5_prev',
         allowedOrigins: ['https://prev.example'],
         publicBaseUrl: 'https://prev.example/app',
+        fixedPort: null,
+        disconnectGraceSeconds: null,
       },
     })
 
@@ -1178,14 +1187,20 @@ describe('settingsStore H5 access behavior', () => {
 
     expect(useSettingsStore.getState().h5Access).toEqual({
       enabled: true,
+      token: null,
       tokenPreview: 'h5_prev',
       allowedOrigins: ['https://prev.example'],
       publicBaseUrl: 'https://prev.example/app',
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
     expect(useSettingsStore.getState().h5AccessError).toBe('H5 unavailable')
   })
 
-  it('handles H5 enable, regenerate, and disable transitions without persisting a raw token in store state', async () => {
+  // Since issue #767 the server persists the token and returns it inside
+  // settings for local-trusted callers, so the store keeps it too — that is
+  // what lets the QR code survive desktop restarts.
+  it('handles H5 enable, regenerate, and disable transitions and mirrors the persisted token', async () => {
     vi.doMock('../api/settings', () => ({
       settingsApi: {
         getUser: vi.fn(),
@@ -1210,26 +1225,35 @@ describe('settingsStore H5 access behavior', () => {
         enable: vi.fn().mockResolvedValue({
           settings: {
             enabled: true,
+            token: 'raw-enable-token',
             tokenPreview: 'h5_first',
             allowedOrigins: [],
             publicBaseUrl: null,
+            fixedPort: null,
+            disconnectGraceSeconds: null,
           },
           token: 'raw-enable-token',
         }),
         disable: vi.fn().mockResolvedValue({
           settings: {
             enabled: false,
-            tokenPreview: null,
+            token: 'raw-regenerated-token',
+            tokenPreview: 'h5_second',
             allowedOrigins: [],
             publicBaseUrl: null,
+            fixedPort: null,
+            disconnectGraceSeconds: null,
           },
         }),
         regenerate: vi.fn().mockResolvedValue({
           settings: {
             enabled: true,
+            token: 'raw-regenerated-token',
             tokenPreview: 'h5_second',
             allowedOrigins: ['https://phone.example'],
             publicBaseUrl: 'https://phone.example/app',
+            fixedPort: null,
+            disconnectGraceSeconds: null,
           },
           token: 'raw-regenerated-token',
         }),
@@ -1242,25 +1266,35 @@ describe('settingsStore H5 access behavior', () => {
     await expect(useSettingsStore.getState().enableH5Access()).resolves.toBe('raw-enable-token')
     expect(useSettingsStore.getState().h5Access).toEqual({
       enabled: true,
+      token: 'raw-enable-token',
       tokenPreview: 'h5_first',
       allowedOrigins: [],
       publicBaseUrl: null,
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
 
     await expect(useSettingsStore.getState().regenerateH5AccessToken()).resolves.toBe('raw-regenerated-token')
     expect(useSettingsStore.getState().h5Access).toEqual({
       enabled: true,
+      token: 'raw-regenerated-token',
       tokenPreview: 'h5_second',
       allowedOrigins: ['https://phone.example'],
       publicBaseUrl: 'https://phone.example/app',
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
 
+    // Disable keeps the token so a later re-enable restores paired devices.
     await expect(useSettingsStore.getState().disableH5Access()).resolves.toBeUndefined()
     expect(useSettingsStore.getState().h5Access).toEqual({
       enabled: false,
-      tokenPreview: null,
+      token: 'raw-regenerated-token',
+      tokenPreview: 'h5_second',
       allowedOrigins: [],
       publicBaseUrl: null,
+      fixedPort: null,
+      disconnectGraceSeconds: null,
     })
     expect(useSettingsStore.getState().h5AccessError).toBeNull()
     expect('h5AccessGeneratedToken' in useSettingsStore.getState()).toBe(false)

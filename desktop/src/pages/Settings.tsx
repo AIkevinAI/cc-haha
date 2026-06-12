@@ -123,6 +123,25 @@ function extractH5AccessPort(baseUrl: string | null): string | null {
   }
 }
 
+// Mirrors the server-side fixedPort range (h5AccessService MIN/MAX_FIXED_PORT).
+function parseH5FixedPortDraft(draft: string): number | null | 'invalid' {
+  const trimmed = draft.trim()
+  if (!trimmed) return null
+  if (!/^\d{1,5}$/.test(trimmed)) return 'invalid'
+  const port = Number(trimmed)
+  return port >= 1024 && port <= 65535 ? port : 'invalid'
+}
+
+// Mirrors the server-side disconnect grace range (h5AccessService
+// MIN/MAX_DISCONNECT_GRACE_SECONDS). Empty = use the built-in 30s default.
+function parseH5GraceDraft(draft: string): number | null | 'invalid' {
+  const trimmed = draft.trim()
+  if (!trimmed) return null
+  if (!/^\d{1,5}$/.test(trimmed)) return 'invalid'
+  const seconds = Number(trimmed)
+  return seconds >= 5 && seconds <= 86400 ? seconds : 'invalid'
+}
+
 function buildH5PublicBaseUrlFromHostDraft(draft: string, currentBaseUrl: string | null): string | null {
   const trimmed = draft.trim()
   if (!trimmed) return null
@@ -2777,27 +2796,44 @@ function H5AccessSettings() {
   const t = useTranslation()
   const addToast = useUIStore((s) => s.addToast)
   const [h5PublicBaseUrlDraft, setH5PublicBaseUrlDraft] = useState(extractH5AccessAddressDraft(h5Access.publicBaseUrl))
-  const [h5GeneratedToken, setH5GeneratedToken] = useState<string | null>(null)
+  const [h5FixedPortDraft, setH5FixedPortDraft] = useState(h5Access.fixedPort != null ? String(h5Access.fixedPort) : '')
+  const [h5GraceDraft, setH5GraceDraft] = useState(h5Access.disconnectGraceSeconds != null ? String(h5Access.disconnectGraceSeconds) : '')
   const [h5TokenVisible, setH5TokenVisible] = useState(false)
   const [h5EnableConfirmOpen, setH5EnableConfirmOpen] = useState(false)
   const [h5QrDataUrl, setH5QrDataUrl] = useState<string | null>(null)
   const [h5ActionRunning, setH5ActionRunning] = useState(false)
   const h5AccessUrl = h5Access.publicBaseUrl
+  // The token is persisted server-side, so the QR code and copy actions stay
+  // available across desktop restarts (issue #767).
+  const h5Token = h5Access.token
   const h5LaunchUrl = useMemo(
-    () => buildH5LaunchUrl(h5AccessUrl, h5GeneratedToken),
-    [h5AccessUrl, h5GeneratedToken],
+    () => buildH5LaunchUrl(h5AccessUrl, h5Token),
+    [h5AccessUrl, h5Token],
   )
-  const h5AccessPort = extractH5AccessPort(h5AccessUrl)
+  const h5ActivePort = h5AccessDiagnostics?.activePort != null
+    ? String(h5AccessDiagnostics.activePort)
+    : extractH5AccessPort(h5AccessUrl)
   const h5NextPublicBaseUrl = buildH5PublicBaseUrlFromHostDraft(h5PublicBaseUrlDraft, h5Access.publicBaseUrl)
-  const h5AccessDirty = h5NextPublicBaseUrl !== (h5Access.publicBaseUrl ?? null)
+  const h5NextFixedPort = parseH5FixedPortDraft(h5FixedPortDraft)
+  const h5FixedPortInvalid = h5NextFixedPort === 'invalid'
+  const h5NextGrace = parseH5GraceDraft(h5GraceDraft)
+  const h5GraceInvalid = h5NextGrace === 'invalid'
+  const h5AccessDirty = h5NextPublicBaseUrl !== (h5Access.publicBaseUrl ?? null) ||
+    (!h5FixedPortInvalid && h5NextFixedPort !== h5Access.fixedPort) ||
+    (!h5GraceInvalid && h5NextGrace !== h5Access.disconnectGraceSeconds)
+  const h5FixedPortPendingRestart = h5Access.fixedPort != null &&
+    h5ActivePort != null &&
+    String(h5Access.fixedPort) !== h5ActivePort
 
   useEffect(() => {
     setH5PublicBaseUrlDraft(extractH5AccessAddressDraft(h5Access.publicBaseUrl))
+    setH5FixedPortDraft(h5Access.fixedPort != null ? String(h5Access.fixedPort) : '')
+    setH5GraceDraft(h5Access.disconnectGraceSeconds != null ? String(h5Access.disconnectGraceSeconds) : '')
   }, [h5Access])
 
   useEffect(() => {
     let cancelled = false
-    if (!h5Access.enabled || !h5LaunchUrl || !h5GeneratedToken) {
+    if (!h5Access.enabled || !h5LaunchUrl || !h5Token) {
       setH5QrDataUrl(null)
       return () => {
         cancelled = true
@@ -2815,7 +2851,7 @@ function H5AccessSettings() {
     return () => {
       cancelled = true
     }
-  }, [h5Access.enabled, h5LaunchUrl, h5GeneratedToken])
+  }, [h5Access.enabled, h5LaunchUrl, h5Token])
 
   const runH5Action = async (action: () => Promise<void>) => {
     setH5ActionRunning(true)
@@ -2829,9 +2865,12 @@ function H5AccessSettings() {
   }
 
   const handleH5SettingsSave = async () => {
+    if (h5FixedPortInvalid || h5GraceInvalid) return
     await runH5Action(async () => {
       await updateH5AccessSettings({
         publicBaseUrl: h5NextPublicBaseUrl,
+        fixedPort: h5NextFixedPort,
+        disconnectGraceSeconds: h5NextGrace,
       })
     })
   }
@@ -2867,8 +2906,7 @@ function H5AccessSettings() {
 
   const handleH5EnableConfirm = async () => {
     await runH5Action(async () => {
-      const token = await enableH5Access()
-      setH5GeneratedToken(token)
+      await enableH5Access()
       setH5TokenVisible(false)
       setH5EnableConfirmOpen(false)
     })
@@ -2877,15 +2915,13 @@ function H5AccessSettings() {
   const handleH5Disable = async () => {
     await runH5Action(async () => {
       await disableH5Access()
-      setH5GeneratedToken(null)
       setH5TokenVisible(false)
     })
   }
 
   const handleH5Regenerate = async () => {
     await runH5Action(async () => {
-      const token = await regenerateH5AccessToken()
-      setH5GeneratedToken(token)
+      await regenerateH5AccessToken()
       setH5TokenVisible(false)
     })
   }
@@ -2992,7 +3028,7 @@ function H5AccessSettings() {
           ) : null}
 
           <div className="mt-4 grid grid-cols-1 gap-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_9rem_9rem]">
               <Input
                 id="h5-access-public-url"
                 label={t('settings.general.h5AccessPublicHost')}
@@ -3001,27 +3037,63 @@ function H5AccessSettings() {
                 onChange={(event) => setH5PublicBaseUrlDraft(event.target.value)}
               />
               <Input
+                id="h5-access-fixed-port"
+                label={t('settings.general.h5AccessFixedPort')}
+                value={h5FixedPortDraft}
+                placeholder={t('settings.general.h5AccessFixedPortPlaceholder')}
+                inputMode="numeric"
+                error={h5FixedPortInvalid ? t('settings.general.h5AccessFixedPortInvalid') : undefined}
+                onChange={(event) => setH5FixedPortDraft(event.target.value)}
+              />
+              <Input
                 id="h5-access-current-port"
                 label={t('settings.general.h5AccessCurrentPort')}
-                value={h5AccessPort ?? t('settings.general.h5AccessCurrentPortUnknown')}
+                value={h5ActivePort ?? t('settings.general.h5AccessCurrentPortUnknown')}
                 readOnly
                 className="text-[var(--color-text-tertiary)]"
               />
             </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:items-start">
+              <Input
+                id="h5-access-disconnect-grace"
+                label={t('settings.general.h5AccessDisconnectGrace')}
+                value={h5GraceDraft}
+                placeholder={t('settings.general.h5AccessDisconnectGracePlaceholder')}
+                inputMode="numeric"
+                error={h5GraceInvalid ? t('settings.general.h5AccessDisconnectGraceInvalid') : undefined}
+                onChange={(event) => setH5GraceDraft(event.target.value)}
+              />
+              <p className="text-xs leading-5 text-[var(--color-text-tertiary)] sm:pt-7">
+                {t('settings.general.h5AccessDisconnectGraceHint')}
+              </p>
+            </div>
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-[var(--color-text-tertiary)]">
                 {t('settings.general.h5AccessOpenHint')}
+                {' '}
+                {t('settings.general.h5AccessFixedPortHint')}
               </p>
               <Button
                 size="sm"
                 variant="secondary"
                 onClick={() => void handleH5SettingsSave()}
-                disabled={!h5AccessDirty || h5ActionRunning}
+                disabled={!h5AccessDirty || h5FixedPortInvalid || h5GraceInvalid || h5ActionRunning}
                 aria-label={t('settings.general.h5AccessSave')}
               >
                 {t('settings.general.h5AccessSave')}
               </Button>
             </div>
+            {h5FixedPortPendingRestart && (
+              <div
+                data-testid="h5-access-fixed-port-restart-note"
+                className="rounded-lg border border-[var(--color-warning)]/40 bg-[var(--color-warning)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-text-primary)]"
+              >
+                {t('settings.general.h5AccessFixedPortRestartNote', {
+                  fixedPort: String(h5Access.fixedPort),
+                  activePort: h5ActivePort ?? '',
+                })}
+              </div>
+            )}
           </div>
 
           {h5AccessUrl && (
@@ -3073,7 +3145,7 @@ function H5AccessSettings() {
                     {t('settings.general.h5AccessQrTitle')}
                   </div>
                   <p className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">
-                    {h5GeneratedToken
+                    {h5Token
                       ? t('settings.general.h5AccessQrHint')
                       : t('settings.general.h5AccessQrRefreshHint')}
                   </p>
@@ -3087,19 +3159,19 @@ function H5AccessSettings() {
                       size="sm"
                       variant="secondary"
                       icon={<Copy className="h-3.5 w-3.5" aria-hidden="true" />}
-                      disabled={!h5LaunchUrl || !h5GeneratedToken}
+                      disabled={!h5LaunchUrl || !h5Token}
                       onClick={() => void handleH5LaunchUrlCopy()}
                     >
                       {t('settings.general.h5AccessCopyLaunchUrl')}
                     </Button>
                     <Button
                       size="sm"
-                      variant={h5GeneratedToken ? 'secondary' : 'primary'}
+                      variant={h5Token ? 'secondary' : 'primary'}
                       icon={<RotateCw className="h-3.5 w-3.5" aria-hidden="true" />}
                       loading={h5ActionRunning}
                       onClick={() => void handleH5Regenerate()}
                     >
-                      {h5GeneratedToken ? t('settings.general.h5AccessRegenerate') : t('settings.general.h5AccessGenerateToken')}
+                      {h5Token ? t('settings.general.h5AccessRegenerate') : t('settings.general.h5AccessGenerateToken')}
                     </Button>
                   </div>
                 </div>
@@ -3115,8 +3187,8 @@ function H5AccessSettings() {
                     {t('settings.general.h5AccessTokenPreview')}
                   </div>
                   <div className="mt-1 break-all text-sm text-[var(--color-text-primary)]">
-                    {h5TokenVisible && h5GeneratedToken
-                      ? h5GeneratedToken
+                    {h5TokenVisible && h5Token
+                      ? h5Token
                       : h5Access.tokenPreview || t('settings.general.h5AccessTokenNotAvailable')}
                   </div>
                 </div>
@@ -3125,7 +3197,7 @@ function H5AccessSettings() {
                     size="sm"
                     variant="secondary"
                     icon={h5TokenVisible ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
-                    disabled={!h5GeneratedToken}
+                    disabled={!h5Token}
                     onClick={() => setH5TokenVisible((visible) => !visible)}
                   >
                     {h5TokenVisible ? t('settings.general.h5AccessHideToken') : t('settings.general.h5AccessShowToken')}
