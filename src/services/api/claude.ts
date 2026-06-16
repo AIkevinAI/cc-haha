@@ -253,10 +253,13 @@ import {
   checkResponseForCacheBreak,
   recordPromptState,
 } from "./promptCacheBreakDetection.js";
+import { withStreamRetry } from "./streamRetry.js";
 import {
   CannotRetryError,
   FallbackTriggeredError,
   is529Error,
+  isRetryableStreamError,
+  RetriableStreamError,
   type RetryContext,
   withRetry,
 } from "./withRetry.js";
@@ -730,13 +733,18 @@ export async function queryModelWithoutStreaming({
   // logAPISuccessAndDuration gets called (which happens after all yields)
   let assistantMessage: AssistantMessage | undefined;
   for await (const message of withStreamingVCR(messages, async function* () {
-    yield* queryModel(
+    yield* withStreamRetry(
+      () =>
+        queryModel(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          tools,
+          signal,
+          options,
+        ),
+      options.model,
       messages,
-      systemPrompt,
-      thinkingConfig,
-      tools,
-      signal,
-      options,
     );
   })) {
     if (message.type === "assistant") {
@@ -773,13 +781,18 @@ export async function* queryModelWithStreaming({
   void
 > {
   return yield* withStreamingVCR(messages, async function* () {
-    yield* queryModel(
+    yield* withStreamRetry(
+      () =>
+        queryModel(
+          messages,
+          systemPrompt,
+          thinkingConfig,
+          tools,
+          signal,
+          options,
+        ),
+      options.model,
       messages,
-      systemPrompt,
-      thinkingConfig,
-      tools,
-      signal,
-      options,
     );
   });
 }
@@ -2602,6 +2615,31 @@ async function* queryModel(
         }
       }
 
+      // A transient, server-side error that arrived mid-stream (a local provider
+      // rejecting a malformed tool_call, or an upstream api_error /
+      // overloaded_error SSE event) is recoverable by re-establishing the
+      // stream. Only retry when this attempt produced NOTHING
+      // (newMessages.length === 0): a zero-output stream means no tool_use block
+      // ever completed, so query.ts never started a tool — no double-execution
+      // risk (cf. #766 / inc-4258), the same precondition the zero-output
+      // fallback below relies on. Watchdog aborts are excluded (they have their
+      // own fallback/timeout handling). Thrown past the outer catch — which
+      // re-throws it — up to withStreamRetry.
+      if (
+        newMessages.length === 0 &&
+        !streamIdleAborted &&
+        !signal.aborted &&
+        isRetryableStreamError(streamingError)
+      ) {
+        logForDebugging(
+          `Transient mid-stream error before any output, will retry stream: ${errorMessage(
+            streamingError,
+          )}`,
+          { level: "warn" },
+        );
+        throw new RetriableStreamError(streamingError);
+      }
+
       // When the flag is enabled, skip the non-streaming fallback and let the
       // error propagate to withRetry. The mid-stream fallback causes double tool
       // execution when streaming tool execution is active: the partial stream
@@ -2750,6 +2788,14 @@ async function* queryModel(
     // no-op — the user would just see "Model fallback triggered: X -> Y" as
     // an error message with no actual retry on the fallback model.
     if (errorFromRetry instanceof FallbackTriggeredError) {
+      throw errorFromRetry;
+    }
+
+    // A transient mid-stream error flagged for stream-level retry: propagate up
+    // to withStreamRetry (the streaming wrapper), which re-establishes the
+    // stream. Must escape the terminal error handling below, which would
+    // otherwise yield an API-error message and end the turn.
+    if (errorFromRetry instanceof RetriableStreamError) {
       throw errorFromRetry;
     }
 
