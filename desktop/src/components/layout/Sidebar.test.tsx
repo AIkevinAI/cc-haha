@@ -293,6 +293,35 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: 'Collapse display' })).toBeInTheDocument()
   })
 
+  it('lets a manual session refresh supersede a stuck automatic refresh', async () => {
+    fetchSessions.mockReturnValue(new Promise(() => {}))
+
+    render(<Sidebar />)
+
+    await waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh sessions' }))
+
+    await waitFor(() => expect(fetchSessions).toHaveBeenCalledTimes(2))
+  })
+
+  it('keeps the session refresh control usable when a background refresh is still loading existing sessions', async () => {
+    useSessionStore.setState({
+      sessions: [
+        makeSession('session-loaded', 'Loaded session', '/workspace/alpha', '2026-05-15T10:00:00.000Z'),
+      ],
+      isLoading: true,
+    })
+
+    render(<Sidebar />)
+
+    const refreshButton = screen.getByRole('button', { name: 'Refresh sessions' })
+    expect(refreshButton).not.toBeDisabled()
+    expect(refreshButton.querySelector('svg')).not.toHaveClass('animate-spin')
+
+    fireEvent.click(refreshButton)
+    await waitFor(() => expect(fetchSessions).toHaveBeenCalled())
+  })
+
   it('reorders project groups by dragging project headers while preserving expanded state', async () => {
     const base = new Date('2026-05-15T10:00:00.000Z').getTime()
     useSessionStore.setState({
