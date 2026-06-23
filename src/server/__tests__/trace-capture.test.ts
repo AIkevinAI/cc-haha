@@ -565,6 +565,52 @@ describe('trace capture service', () => {
     }
   })
 
+  test('captures direct provider headers when fetch input is a Request', async () => {
+    const originalFetch = globalThis.fetch
+    const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
+    process.env.CC_HAHA_TRACE_API_CALLS = '1'
+    try {
+      globalThis.fetch = (async () => new Response(
+        JSON.stringify({ id: 'msg-request-input', content: [{ type: 'text', text: 'ok' }] }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )) as typeof fetch
+
+      const traceFetch = createDumpPromptsFetch('agent-direct-request-input', {
+        traceSessionId: 'session-direct-request-input',
+        querySource: 'test_query',
+      })
+      const requestInput = new Request('https://sub2api.example.test/v1/messages', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer sk-direct-header-secret',
+          'Content-Type': 'application/json',
+        },
+      })
+
+      await traceFetch(requestInput, {
+        method: 'POST',
+        body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'request input' }] }),
+      })
+
+      const trace = await waitForTrace(
+        'session-direct-request-input',
+        (snapshot) => Boolean(snapshot.calls[0]?.response) && snapshot.events.length >= 2,
+      )
+      expect(trace.summary.apiCalls).toBe(1)
+      expect(trace.calls[0].request.headers.authorization).toBe('[redacted]')
+      expect(trace.calls[0].request.headers['content-type']).toBe('application/json')
+      expect(trace.calls[0].request.body.preview).toContain('request input')
+      expect(trace.calls[0].response.body.preview).toContain('msg-request-input')
+    } finally {
+      globalThis.fetch = originalFetch
+      if (originalTraceEnv === undefined) delete process.env.CC_HAHA_TRACE_API_CALLS
+      else process.env.CC_HAHA_TRACE_API_CALLS = originalTraceEnv
+    }
+  })
+
   test('captures direct provider fetch failures without changing thrown behavior', async () => {
     const originalFetch = globalThis.fetch
     const originalTraceEnv = process.env.CC_HAHA_TRACE_API_CALLS
