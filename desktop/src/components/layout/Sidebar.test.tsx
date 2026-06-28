@@ -113,6 +113,7 @@ import { useSessionStore } from '../../stores/sessionStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import type { SessionListItem } from '../../types/session'
+import type { PerSessionState } from '../../stores/chatStore'
 
 const PROJECT_ORDER_STORAGE_KEY = 'cc-haha-sidebar-project-order'
 const PROJECT_PINNED_STORAGE_KEY = 'cc-haha-sidebar-pinned-projects'
@@ -136,6 +137,33 @@ function makeSession(
     projectRoot,
     workDir: projectRoot,
     workDirExists: true,
+  }
+}
+
+function makeChatSessionState(overrides: Partial<PerSessionState> = {}): PerSessionState {
+  return {
+    messages: [],
+    chatState: 'idle',
+    connectionState: 'connected',
+    streamingText: '',
+    streamingToolInput: '',
+    activeToolUseId: null,
+    activeToolName: null,
+    activeThinkingId: null,
+    pendingPermission: null,
+    pendingComputerUsePermission: null,
+    tokenUsage: { input_tokens: 0, output_tokens: 0 },
+    streamingResponseChars: 0,
+    elapsedSeconds: 0,
+    statusVerb: '',
+    slashCommands: [],
+    agentTaskNotifications: {},
+    backgroundAgentTasks: {},
+    activeGoal: null,
+    elapsedTimer: null,
+    composerPrefill: null,
+    composerDraft: null,
+    ...overrides,
   }
 }
 
@@ -884,15 +912,34 @@ describe('Sidebar', () => {
           ...makeSession('running-worktree', 'Running Worktree', '/workspace/repo/.claude/worktrees/desktop-main-12345678', '2026-05-19T07:00:00.000Z'),
           projectRoot: '/workspace/repo',
         },
+        makeSession('background-running', 'Background Running', '/workspace/repo', '2026-05-19T10:30:00.000Z'),
         makeSession('idle-source', 'Idle Source', '/workspace/repo', '2026-05-19T11:40:00.000Z'),
       ],
     })
     useTabStore.setState({
       tabs: [
         { sessionId: 'running-worktree', title: 'Running Worktree', type: 'session', status: 'running' },
+        { sessionId: 'background-running', title: 'Background Running', type: 'session', status: 'idle' },
         { sessionId: 'idle-source', title: 'Idle Source', type: 'session', status: 'idle' },
       ],
       activeTabId: 'running-worktree',
+    })
+    useChatStore.setState({
+      sessions: {
+        'background-running': makeChatSessionState({
+          backgroundAgentTasks: {
+            'agent-task-1': {
+              taskId: 'agent-task-1',
+              toolUseId: 'agent-tool-1',
+              status: 'running',
+              taskType: 'local_agent',
+              description: 'Review screenshots',
+              startedAt: 1,
+              updatedAt: 2,
+            },
+          },
+        }),
+      },
     })
 
     render(<Sidebar />)
@@ -901,6 +948,9 @@ describe('Sidebar', () => {
     expect(within(runningRow).getByLabelText('Session running')).toBeInTheDocument()
     expect(within(runningRow).getByText('worktree')).toHaveClass('sr-only')
     expect(within(runningRow).getByText('5h ago')).toBeInTheDocument()
+
+    const backgroundRunningRow = screen.getByRole('button', { name: /Background Running/ })
+    expect(within(backgroundRunningRow).getByLabelText('Session running')).toBeInTheDocument()
 
     const idleRow = screen.getByRole('button', { name: /Idle Source/ })
     expect(within(idleRow).queryByLabelText('Session running')).not.toBeInTheDocument()

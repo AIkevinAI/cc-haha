@@ -12,6 +12,7 @@ import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { publicAssetPath } from '../../lib/publicAsset'
+import { hasRunningBackgroundTasks } from '../../lib/backgroundTasks'
 
 const desktopHost = getDesktopHost()
 const isDesktopRuntime = desktopHost.isDesktop
@@ -140,7 +141,9 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       if (tab.type === 'session' && tab.status === 'running') ids.add(tab.sessionId)
     }
     for (const [sessionId, sessionState] of Object.entries(chatSessions)) {
-      if (sessionState.chatState !== 'idle') ids.add(sessionId)
+      if (sessionState.chatState !== 'idle' || hasRunningBackgroundTasks(sessionState.backgroundAgentTasks)) {
+        ids.add(sessionId)
+      }
     }
     return ids
   }, [chatSessions, tabs])
