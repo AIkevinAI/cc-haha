@@ -44,6 +44,8 @@ import { registerChangedFileAccessRoot, registerFilesystemAccessRoot } from '../
 import { findGitRoot } from '../../utils/git.js'
 import { traceCaptureService, trimTraceCallPreviews } from '../services/traceCaptureService.js'
 
+const DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
+
 const workspaceService = new WorkspaceService(
   async (sessionId) => (
     conversationService.getSessionWorkDir(sessionId) ||
@@ -725,6 +727,66 @@ function sameResolvedPath(left: string | null | undefined, right: string | null 
   return path.resolve(left) === path.resolve(right)
 }
 
+function getGitInfoCommandTimeoutMs(): number {
+  const raw = process.env.CC_HAHA_GIT_INFO_TIMEOUT_MS
+  if (!raw) return DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_GIT_INFO_COMMAND_TIMEOUT_MS
+}
+
+async function runGitInfoCommand(workDir: string, args: string[]): Promise<string | null> {
+  let proc: Bun.Subprocess<'ignore', 'pipe', 'ignore'> | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = null
+
+  try {
+    proc = Bun.spawn(['git', ...args], {
+      cwd: workDir,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+
+    const output = new Response(proc.stdout).text()
+      .then(async (text) => (await proc!.exited) === 0 ? text.trim() : null)
+      .catch(() => null)
+
+    const timedOut = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => {
+        try {
+          proc?.kill()
+        } catch {
+          // Process may already have exited.
+        }
+        resolve(null)
+      }, getGitInfoCommandTimeoutMs())
+    })
+
+    return await Promise.race([output, timedOut])
+  } catch {
+    return null
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+function repoNameFromRemote(remote: string | null): string {
+  if (!remote) return ''
+  const match = remote.match(/\/([^/]+?)(?:\.git)?$/) || remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/)
+  return match ? match[1]! : ''
+}
+
+function ownerRepoNameFromRemote(remote: string | null): string | null {
+  if (!remote) return null
+  const match = remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/) || remote.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/)
+  return match ? match[1]! : null
+}
+
+function repoNameFromWorkDir(workDir: string): string {
+  return path.basename(workDir) || workDir.split(/[\\/]/).filter(Boolean).at(-1) || ''
+}
+
 async function getGitInfo(sessionId: string): Promise<Response> {
   const workDir = conversationService.getSessionWorkDir(sessionId) || await sessionService.getSessionWorkDir(sessionId)
   if (!workDir) {
@@ -754,7 +816,7 @@ async function getGitInfo(sessionId: string): Promise<Response> {
   // spawns on non-git directories (each can take seconds as git searches upward).
   const gitRoot = findGitRoot(workDir)
   if (!gitRoot) {
-    const dirName = workDir.split('/').pop() || workDir.split(path.sep).pop() || ''
+    const dirName = repoNameFromWorkDir(workDir)
     return Response.json({
       branch: sessionBranch,
       repoName: dirName,
@@ -766,13 +828,7 @@ async function getGitInfo(sessionId: string): Promise<Response> {
 
   try {
     // Get branch name
-    const branchProc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: workDir,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    const branchText = await new Response(branchProc.stdout).text()
-    const gitBranch = branchText.trim() || null
+    const gitBranch = await runGitInfoCommand(workDir, ['rev-parse', '--abbrev-ref', 'HEAD'])
     const materializedWorktree = !!worktree && (
       sameResolvedPath(workDir, worktree.path) ||
       sameResolvedPath(workDir, worktree.plannedPath)
@@ -784,32 +840,12 @@ async function getGitInfo(sessionId: string): Promise<Response> {
     )
 
     // Get repo name from remote or directory
-    let repoName = ''
-    try {
-      const remoteProc = Bun.spawn(['git', 'remote', 'get-url', 'origin'], {
-        cwd: workDir,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      })
-      const remoteText = await new Response(remoteProc.stdout).text()
-      const remote = remoteText.trim()
-      // Extract repo name from URL: git@github.com:user/repo.git or https://...repo.git
-      const match = remote.match(/\/([^/]+?)(?:\.git)?$/) || remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/)
-      repoName = match ? match[1]! : ''
-    } catch {
-      // No remote, use directory name
-      const parts = workDir.split('/')
-      repoName = parts[parts.length - 1] || ''
-    }
+    const remote = await runGitInfoCommand(workDir, ['remote', 'get-url', 'origin'])
+    const repoName = repoNameFromRemote(remote) || repoNameFromWorkDir(workDir)
 
     // Get short status
-    const statusProc = Bun.spawn(['git', 'status', '--porcelain'], {
-      cwd: workDir,
-      stdout: 'pipe',
-      stderr: 'pipe',
-    })
-    const statusText = await new Response(statusProc.stdout).text()
-    const changedFiles = statusText.trim().split('\n').filter(Boolean).length
+    const statusText = await runGitInfoCommand(workDir, ['-c', 'core.fsmonitor=false', 'status', '--porcelain'])
+    const changedFiles = statusText?.split('\n').filter(Boolean).length ?? 0
 
     return Response.json({
       branch,
@@ -1079,25 +1115,11 @@ async function getRecentProjects(url: URL): Promise<Response> {
         // Run branch + remote in parallel
         try {
           const [branchResult, remoteResult] = await Promise.all([
-            (async () => {
-              const branchProc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
-                cwd: realPath, stdout: 'pipe', stderr: 'pipe',
-              })
-              return (await new Response(branchProc.stdout).text()).trim() || null
-            })(),
-            (async () => {
-              try {
-                const remoteProc = Bun.spawn(['git', 'remote', 'get-url', 'origin'], {
-                  cwd: realPath, stdout: 'pipe', stderr: 'pipe',
-                })
-                const remote = (await new Response(remoteProc.stdout).text()).trim()
-                const match = remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/) || remote.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/)
-                return match ? match[1]! : null
-              } catch { return null }
-            })(),
+            runGitInfoCommand(realPath, ['rev-parse', '--abbrev-ref', 'HEAD']),
+            runGitInfoCommand(realPath, ['remote', 'get-url', 'origin']),
           ])
           branch = isDesktopWorktreeBranchName(branchResult) ? null : branchResult
-          repoName = remoteResult
+          repoName = ownerRepoNameFromRemote(remoteResult)
         } catch { /* git command failed */ }
       }
       

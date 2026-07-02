@@ -2395,6 +2395,56 @@ describe('Sessions API', () => {
     })
   })
 
+  it('GET /api/sessions/:id/git-info should not hang when git blocks in a UTF-8 workDir', async () => {
+    if (process.platform === 'win32') return
+
+    const parentDir = path.join(tmpDir, '数据包看板')
+    const workDir = path.join(parentDir, 'datavizprocessingplatform')
+    await fs.mkdir(workDir, { recursive: true })
+    git(workDir, 'init', '--initial-branch', 'main')
+    git(workDir, 'config', 'user.email', 'sessions-api@example.com')
+    git(workDir, 'config', 'user.name', 'Sessions API')
+    await fs.writeFile(path.join(workDir, 'README.md'), 'main\n')
+    git(workDir, 'add', 'README.md')
+    git(workDir, 'commit', '-m', 'initial')
+
+    const fsmonitorPath = path.join(tmpDir, 'slow-fsmonitor.sh')
+    await fs.writeFile(fsmonitorPath, '#!/bin/sh\nsleep 2\nexit 0\n', 'utf-8')
+    await fs.chmod(fsmonitorPath, 0o755)
+    git(workDir, 'config', 'core.fsmonitor', fsmonitorPath)
+
+    const { sessionId } = await sessionService.createSession(workDir)
+    const oldTimeout = process.env.CC_HAHA_GIT_INFO_TIMEOUT_MS
+    process.env.CC_HAHA_GIT_INFO_TIMEOUT_MS = '80'
+
+    try {
+      const startedAt = Date.now()
+      const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/git-info`, {
+        signal: AbortSignal.timeout(1_000),
+      })
+      expect(Date.now() - startedAt).toBeLessThan(1_000)
+      expect(res.status).toBe(200)
+
+      const body = (await res.json()) as {
+        branch: string | null
+        repoName: string | null
+        workDir: string
+        changedFiles: number
+      }
+      expect(body.workDir).toBe(await fs.realpath(workDir))
+      expect(body.workDir).toContain('数据包看板')
+      expect(body.branch).toBe('main')
+      expect(body.repoName).toBe('datavizprocessingplatform')
+      expect(body.changedFiles).toBe(0)
+    } finally {
+      if (oldTimeout === undefined) {
+        delete process.env.CC_HAHA_GIT_INFO_TIMEOUT_MS
+      } else {
+        process.env.CC_HAHA_GIT_INFO_TIMEOUT_MS = oldTimeout
+      }
+    }
+  })
+
   it('DELETE /api/sessions/:id should delete the session', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     await writeSessionFile('-tmp-api-test', sessionId, [makeSnapshotEntry()])
